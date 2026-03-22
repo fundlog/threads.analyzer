@@ -8,7 +8,7 @@ import { sendMessage, setWebhook } from './telegram.js';
 import { processAndSave } from './analyze.js';
 import { getTodaysPosts, getStats, getRecentErrors, logError, getTodaysPostsForDelete, deletePostByHash } from './database.js';
 import { generateReportHtml } from './report.js';
-import { getLocalNow, jsonResponse } from './utils.js';
+import { getLocalNow, jsonResponse, CORS_HEADERS } from './utils.js';
 
 // ============================================================
 // Telegram 명령어 핸들러
@@ -229,6 +229,11 @@ async function handleAnalyze(env, request) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
 
     // GET / — health check
     if (request.method === 'GET' && url.pathname === '/') {
