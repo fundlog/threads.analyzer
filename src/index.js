@@ -30,6 +30,7 @@ async function handleStart(env, chatId, userId) {
   const reportHour = parseInt(env.REPORT_HOUR || '21');
   await sendMessage(env.TELEGRAM_TOKEN, chatId,
     '👋 Threads 분석 봇입니다.\n\n' +
+    `🆔 텔레그램 ID: ${userId}\n\n` +
     '📌 사용법:\n' +
     '- iOS 단축어로 Threads 공유 (1탭!)\n' +
     '- 또는 여기에 직접 링크/텍스트 보내기\n\n' +
