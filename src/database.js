@@ -70,17 +70,17 @@ export async function getStats(db, timezoneOffset) {
   return { total, categories, todayCount, errorCount };
 }
 
-export async function getTodaysPostsWithRowid(db, timezoneOffset) {
+export async function getTodaysPostsForDelete(db, timezoneOffset) {
   const now = getLocalNow(timezoneOffset);
   const today = formatDate(now, 'date');
   const result = await db.prepare(
-    'SELECT rowid, summary_short, original_url, author FROM saved_posts WHERE saved_at LIKE ? ORDER BY saved_at'
+    'SELECT url_hash, summary_short, original_url, author FROM saved_posts WHERE saved_at LIKE ? ORDER BY saved_at'
   ).bind(`${today}%`).all();
   return result.results || [];
 }
 
-export async function deletePostByRowid(db, rowid) {
-  await db.prepare('DELETE FROM saved_posts WHERE rowid = ?').bind(rowid).run();
+export async function deletePostByHash(db, urlHash) {
+  await db.prepare('DELETE FROM saved_posts WHERE url_hash = ?').bind(urlHash).run();
 }
 
 export async function logError(db, errorType) {

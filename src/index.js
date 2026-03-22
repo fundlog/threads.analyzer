@@ -6,7 +6,7 @@
 
 import { sendMessage, setWebhook } from './telegram.js';
 import { processAndSave } from './analyze.js';
-import { getTodaysPosts, getStats, getRecentErrors, logError, getTodaysPostsWithRowid, deletePostByRowid } from './database.js';
+import { getTodaysPosts, getStats, getRecentErrors, logError, getTodaysPostsForDelete, deletePostByHash } from './database.js';
 import { generateReportHtml } from './report.js';
 import { getLocalNow, jsonResponse } from './utils.js';
 
@@ -38,8 +38,7 @@ async function handleStart(env, chatId, userId) {
     '/report - 오늘 리포트 보기\n' +
     '/stats - 저장 통계\n' +
     '/delete - 오늘 저장한 글 삭제\n' +
-    '/errors - 최근 에러\n' +
-    '/channeltest - 채널 테스트\n\n' +
+    '/errors - 최근 에러\n\n' +
     `⏰ 매일 ${reportHour}시에 자동 리포트`
   );
 }
@@ -73,51 +72,45 @@ async function handleErrors(env, chatId, userId) {
   await sendMessage(env.TELEGRAM_TOKEN, chatId, `⚠️ 최근 에러 (${errors.length}건)\n\n${errorText}`);
 }
 
-async function handleChannelTest(env, chatId, userId) {
-  if (userId !== parseInt(env.OWNER_ID || '0')) return;
-  if (!env.CHANNEL_THREADS) {
-    await sendMessage(env.TELEGRAM_TOKEN, chatId, '⚠️ CHANNEL_THREADS 환경변수가 설정되지 않았습니다.');
-    return;
-  }
-  try {
-    await sendMessage(env.TELEGRAM_TOKEN, env.CHANNEL_THREADS, '✅ 채널 연결 테스트 성공!');
-    await sendMessage(env.TELEGRAM_TOKEN, chatId, '✅ 채널 연결 성공!');
-  } catch {
-    await sendMessage(env.TELEGRAM_TOKEN, chatId, '❌ 채널 연결 실패.');
-  }
-}
-
 async function handleDelete(env, chatId, userId, arg) {
   if (userId !== parseInt(env.OWNER_ID || '0')) return;
 
-  const posts = await getTodaysPostsWithRowid(env.DB, env.TIMEZONE_OFFSET);
+  try {
+    const posts = await getTodaysPostsForDelete(env.DB, env.TIMEZONE_OFFSET);
 
-  if (posts.length === 0) {
-    await sendMessage(env.TELEGRAM_TOKEN, chatId, '📭 오늘 저장한 글이 없습니다.');
-    return;
-  }
-
-  // /delete 번호 — 바로 삭제
-  if (arg) {
-    const num = parseInt(arg);
-    if (isNaN(num) || num < 1 || num > posts.length) {
-      await sendMessage(env.TELEGRAM_TOKEN, chatId, `❌ 1~${posts.length} 사이 번호를 입력하세요.`);
+    if (posts.length === 0) {
+      await sendMessage(env.TELEGRAM_TOKEN, chatId, '📭 오늘 저장한 글이 없습니다.');
       return;
     }
-    const post = posts[num - 1];
-    await deletePostByRowid(env.DB, post.rowid);
-    await sendMessage(env.TELEGRAM_TOKEN, chatId, `🗑️ ${num}번 삭제 완료: ${post.summary_short}`);
-    return;
+
+    // /delete 번호(들) — 바로 삭제 (예: /delete 1 3 5)
+    if (arg) {
+      const nums = arg.split(/[\s,]+/).map(Number).filter(n => !isNaN(n));
+      if (nums.length === 0 || nums.some(n => n < 1 || n > posts.length)) {
+        await sendMessage(env.TELEGRAM_TOKEN, chatId, `❌ 1~${posts.length} 사이 번호를 입력하세요.\n예: /delete 1 3`);
+        return;
+      }
+      const deleted = [];
+      for (const num of [...new Set(nums)].sort((a, b) => b - a)) {
+        const post = posts[num - 1];
+        await deletePostByHash(env.DB, post.url_hash);
+        deleted.push(`${num}. ${post.summary_short}`);
+      }
+      await sendMessage(env.TELEGRAM_TOKEN, chatId, `🗑️ 삭제 완료 (${deleted.length}건):\n${deleted.join('\n')}`);
+      return;
+    }
+
+    // /delete만 — 목록 보여주기
+    const list = posts.map((p, i) =>
+      `${i + 1}. ${p.summary_short}\n   👤 ${p.author}`
+    ).join('\n\n');
+
+    await sendMessage(env.TELEGRAM_TOKEN, chatId,
+      `📋 오늘 저장한 글 (${posts.length}건)\n\n${list}\n\n🗑️ 삭제하려면: /delete 번호\n여러 개: /delete 1 3 5`
+    );
+  } catch (e) {
+    await sendMessage(env.TELEGRAM_TOKEN, chatId, `❌ 삭제 실패: ${e.message}`);
   }
-
-  // /delete만 — 목록 보여주기
-  const list = posts.map((p, i) =>
-    `${i + 1}. ${p.summary_short}\n   👤 ${p.author}`
-  ).join('\n\n');
-
-  await sendMessage(env.TELEGRAM_TOKEN, chatId,
-    `📋 오늘 저장한 글 (${posts.length}건)\n\n${list}\n\n🗑️ 삭제하려면: /delete 번호\n예: /delete 2`
-  );
 }
 
 async function handleMessage(env, chatId, userId, text) {
@@ -173,7 +166,6 @@ async function handleTelegramUpdate(env, update) {
   if (text === '/report') return handleReport(env, chatId, userId);
   if (text === '/stats') return handleStats(env, chatId, userId);
   if (text === '/errors') return handleErrors(env, chatId, userId);
-  if (text === '/channeltest') return handleChannelTest(env, chatId, userId);
   if (text === '/delete' || text.startsWith('/delete ')) {
     const arg = text.replace('/delete', '').trim();
     return handleDelete(env, chatId, userId, arg);
