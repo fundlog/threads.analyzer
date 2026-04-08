@@ -4,8 +4,10 @@
 
 import { logError } from './database.js';
 
-export async function callGemini(apiKey, prompt, imageBase64, imageMime) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+export async function callGemini(apiKey, prompt, imageBase64, imageMime, gatewayEndpoint) {
+  const url = gatewayEndpoint
+    ? `${gatewayEndpoint}/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`
+    : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
   const parts = [{ text: prompt }];
   if (imageBase64) {
@@ -56,7 +58,7 @@ export async function downloadImageBase64(imageUrl) {
   }
 }
 
-export async function analyzePost(apiKey, postData) {
+export async function analyzePost(apiKey, postData, gatewayEndpoint) {
   const imageUrl = postData.image_url || '';
   const hasText = !!(postData.text || '').trim();
   const hasImage = !!imageUrl;
@@ -96,7 +98,7 @@ ${context}
     "sentiment": "positive/negative/neutral/informative 중 하나"
 }`;
 
-  const result = await callGemini(apiKey, prompt, imageBase64, imageMime);
+  const result = await callGemini(apiKey, prompt, imageBase64, imageMime, gatewayEndpoint);
   try {
     const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
     return JSON.parse(cleaned);

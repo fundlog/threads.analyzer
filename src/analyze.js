@@ -122,7 +122,7 @@ export async function processAndSave(env, rawInput) {
   }
 
   // AI 분석
-  const analysis = await analyzePost(env.GEMINI_API_KEY, postData);
+  const analysis = await analyzePost(env.GEMINI_API_KEY, postData, env.AI_GATEWAY_ENDPOINT);
 
   // DB 저장
   await savePost(env.DB, url, postData.author || 'Unknown', postData.text || '', analysis, env.TIMEZONE_OFFSET);
