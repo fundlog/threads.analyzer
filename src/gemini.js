@@ -21,6 +21,7 @@ export async function callGemini(apiKey, prompt, imageBase64, imageMime, gateway
 
   const payload = { contents: [{ parts }] };
 
+  const delays = [3000, 5000, 10000];
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(url, {
@@ -35,7 +36,7 @@ export async function callGemini(apiKey, prompt, imageBase64, imageMime, gateway
         const reason = data.error?.message || data.promptFeedback?.blockReason || JSON.stringify(data).slice(0, 200);
         console.error(`Gemini 빈 응답 (시도 ${attempt + 1}/3):`, reason);
         if (attempt === 2) throw new Error(`Gemini 응답 없음: ${reason}`);
-        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+        await new Promise(r => setTimeout(r, delays[attempt]));
         continue;
       }
 
@@ -43,7 +44,7 @@ export async function callGemini(apiKey, prompt, imageBase64, imageMime, gateway
     } catch (e) {
       console.error(`Gemini 호출 실패 (시도 ${attempt + 1}/3):`, e.message);
       if (attempt === 2) throw e;
-      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+      await new Promise(r => setTimeout(r, delays[attempt]));
     }
   }
 }
