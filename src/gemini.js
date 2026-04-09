@@ -29,9 +29,21 @@ export async function callGemini(apiKey, prompt, imageBase64, imageMime, gateway
         body: JSON.stringify(payload),
       });
       const data = await res.json();
+
+      // Gemini 응답 검증
+      if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+        const reason = data.error?.message || data.promptFeedback?.blockReason || JSON.stringify(data).slice(0, 200);
+        console.error(`Gemini 빈 응답 (시도 ${attempt + 1}/3):`, reason);
+        if (attempt === 2) throw new Error(`Gemini 응답 없음: ${reason}`);
+        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+        continue;
+      }
+
       return data.candidates[0].content.parts[0].text;
     } catch (e) {
+      console.error(`Gemini 호출 실패 (시도 ${attempt + 1}/3):`, e.message);
       if (attempt === 2) throw e;
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
     }
   }
 }
