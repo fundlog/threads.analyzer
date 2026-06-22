@@ -13,6 +13,10 @@ const DEFAULT_MODELS = [
   'gemini-2.0-flash-lite',
 ];
 
+// 한 모델이 응답을 안 주고 매달리면 워커가 무한 대기 → 강제 종료되어
+// 성공/실패 메시지조차 못 보냄. 모델당 timeout 을 둬서 빨리 다음으로 넘긴다.
+const MODEL_TIMEOUT_MS = 12000;
+
 export async function callGemini(apiKey, prompt, imageBase64, imageMime, gatewayEndpoint, models) {
   const list = (models && models.length) ? models : DEFAULT_MODELS;
   const base = gatewayEndpoint || 'https://generativelanguage.googleapis.com';
@@ -37,6 +41,7 @@ export async function callGemini(apiKey, prompt, imageBase64, imageMime, gateway
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
       });
       const data = await res.json();
 
@@ -72,6 +77,7 @@ export async function downloadImageBase64(imageUrl) {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
       },
+      signal: AbortSignal.timeout(10000),
     });
     const buffer = await res.arrayBuffer();
     const bytes = new Uint8Array(buffer);
