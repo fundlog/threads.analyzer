@@ -4,6 +4,10 @@
 
 import { getLocalNow, formatDate } from './utils.js';
 
+// Drive 호출이 응답을 안 주면 saveToDrive 가 매달려 워커가 멈춤.
+// 모든 fetch 에 timeout 을 둬서, 멈추면 throw → catch 에서 false 반환(우아한 실패).
+const DRIVE_TIMEOUT_MS = 15000;
+
 async function refreshAccessToken(clientId, clientSecret, refreshToken) {
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -14,6 +18,7 @@ async function refreshAccessToken(clientId, clientSecret, refreshToken) {
       refresh_token: refreshToken,
       grant_type: 'refresh_token',
     }),
+    signal: AbortSignal.timeout(DRIVE_TIMEOUT_MS),
   });
   const data = await res.json();
   if (!data.access_token) throw new Error('Token refresh failed');
@@ -24,7 +29,7 @@ async function findDailyFile(accessToken, folderId, filename) {
   const query = encodeURIComponent(`name='${filename}' and '${folderId}' in parents and trashed=false`);
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id)`,
-    { headers: { Authorization: `Bearer ${accessToken}` } }
+    { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(DRIVE_TIMEOUT_MS) }
   );
   const data = await res.json();
   const files = data.files || [];
@@ -35,7 +40,7 @@ async function getFileContent(accessToken, fileId) {
   try {
     const res = await fetch(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+      { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(DRIVE_TIMEOUT_MS) }
     );
     return await res.text();
   } catch {
@@ -88,6 +93,7 @@ async function createFile(accessToken, folderId, filename, content) {
       'Content-Type': `multipart/related; boundary=${boundary}`,
     },
     body,
+    signal: AbortSignal.timeout(DRIVE_TIMEOUT_MS),
   });
 }
 
@@ -99,6 +105,7 @@ async function updateFile(accessToken, fileId, content) {
       'Content-Type': 'text/plain; charset=UTF-8',
     },
     body: content,
+    signal: AbortSignal.timeout(DRIVE_TIMEOUT_MS),
   });
 }
 
