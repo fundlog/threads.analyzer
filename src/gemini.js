@@ -4,10 +4,18 @@
 
 import { logError } from './database.js';
 
-export async function callGemini(apiKey, prompt, imageBase64, imageMime, gatewayEndpoint) {
-  const url = gatewayEndpoint
-    ? `${gatewayEndpoint}/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`
-    : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+// 무료 티어는 모델마다 할당량(quota) 버킷이 따로라, 한 모델이 한도에 걸려도
+// 다음 모델은 즉시 사용 가능. 품질 높은 순 → 가벼운 순으로 폴백한다.
+const DEFAULT_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+];
+
+export async function callGemini(apiKey, prompt, imageBase64, imageMime, gatewayEndpoint, models) {
+  const list = (models && models.length) ? models : DEFAULT_MODELS;
+  const base = gatewayEndpoint || 'https://generativelanguage.googleapis.com';
 
   const parts = [{ text: prompt }];
   if (imageBase64) {
@@ -21,8 +29,9 @@ export async function callGemini(apiKey, prompt, imageBase64, imageMime, gateway
 
   const payload = { contents: [{ parts }] };
 
-  const delays = [3000, 5000, 10000];
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let lastReason = '';
+  for (const model of list) {
+    const url = `${base}/v1beta/models/${model}:generateContent?key=${apiKey}`;
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -31,22 +40,30 @@ export async function callGemini(apiKey, prompt, imageBase64, imageMime, gateway
       });
       const data = await res.json();
 
-      // Gemini 응답 검증
-      if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
-        const reason = data.error?.message || data.promptFeedback?.blockReason || JSON.stringify(data).slice(0, 200);
-        console.error(`Gemini 빈 응답 (시도 ${attempt + 1}/3):`, reason);
-        if (attempt === 2) throw new Error(`Gemini 응답 없음: ${reason}`);
-        await new Promise(r => setTimeout(r, delays[attempt]));
+      // 한도 초과(quota/rate limit) → 다음 모델로 즉시 전환
+      if (res.status === 429 || data.error?.status === 'RESOURCE_EXHAUSTED') {
+        lastReason = data.error?.message || 'quota exceeded';
+        console.warn(`Gemini ${model} 한도초과 → 다음 모델:`, lastReason);
         continue;
       }
 
+      // 빈 응답 / 차단 → 다음 모델로 전환
+      if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+        lastReason = data.error?.message || data.promptFeedback?.blockReason || JSON.stringify(data).slice(0, 200);
+        console.warn(`Gemini ${model} 빈 응답 → 다음 모델:`, lastReason);
+        continue;
+      }
+
+      console.log(`Gemini ${model} 분석 성공`);
       return data.candidates[0].content.parts[0].text;
     } catch (e) {
-      console.error(`Gemini 호출 실패 (시도 ${attempt + 1}/3):`, e.message);
-      if (attempt === 2) throw e;
-      await new Promise(r => setTimeout(r, delays[attempt]));
+      lastReason = e.message;
+      console.warn(`Gemini ${model} 호출 실패 → 다음 모델:`, e.message);
+      continue;
     }
   }
+
+  throw new Error(`Gemini 응답 없음 (모든 모델 실패): ${lastReason}`);
 }
 
 export async function downloadImageBase64(imageUrl) {
@@ -71,7 +88,7 @@ export async function downloadImageBase64(imageUrl) {
   }
 }
 
-export async function analyzePost(apiKey, postData, gatewayEndpoint) {
+export async function analyzePost(apiKey, postData, gatewayEndpoint, models) {
   const imageUrl = postData.image_url || '';
   const hasText = !!(postData.text || '').trim();
   const hasImage = !!imageUrl;
@@ -111,7 +128,7 @@ ${context}
     "sentiment": "positive/negative/neutral/informative 중 하나"
 }`;
 
-  const result = await callGemini(apiKey, prompt, imageBase64, imageMime, gatewayEndpoint);
+  const result = await callGemini(apiKey, prompt, imageBase64, imageMime, gatewayEndpoint, models);
   try {
     const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
     return JSON.parse(cleaned);

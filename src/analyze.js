@@ -121,8 +121,9 @@ export async function processAndSave(env, rawInput) {
     return 'no_content';
   }
 
-  // AI 분석
-  const analysis = await analyzePost(env.GEMINI_API_KEY, postData, env.AI_GATEWAY_ENDPOINT);
+  // AI 분석 (env.GEMINI_MODELS 가 있으면 쉼표 구분 모델 리스트로 폴백 순서 덮어쓰기)
+  const models = env.GEMINI_MODELS ? env.GEMINI_MODELS.split(',').map(m => m.trim()).filter(Boolean) : null;
+  const analysis = await analyzePost(env.GEMINI_API_KEY, postData, env.AI_GATEWAY_ENDPOINT, models);
 
   // DB 저장
   await savePost(env.DB, url, postData.author || 'Unknown', postData.text || '', analysis, env.TIMEZONE_OFFSET);
