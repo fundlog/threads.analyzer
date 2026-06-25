@@ -9,8 +9,8 @@ import { logError } from './database.js';
 const DEFAULT_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
 ];
 
 // 한 모델이 응답을 안 주고 매달리면 워커가 무한 대기 → 강제 종료되어
