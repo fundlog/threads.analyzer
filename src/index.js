@@ -10,6 +10,16 @@ import { getTodaysPosts, getStats, getRecentErrors, logError, getTodaysPostsForD
 import { generateReportHtml } from './report.js';
 import { getLocalNow, jsonResponse, CORS_HEADERS } from './utils.js';
 
+// 전체 처리 통합 timeout — DB/Drive/Gemini/네트워크 어느 한 곳이 응답을 안 줘도
+// 워커가 "저장 중"에서 영원히 멈추지 않고 반드시 결과 메시지를 보내도록 한다.
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 // ============================================================
 // Telegram 명령어 핸들러
 // ============================================================
@@ -135,7 +145,11 @@ async function handleMessage(env, chatId, userId, text) {
   await sendMessage(env.TELEGRAM_TOKEN, chatId, '🔄 저장 중...');
 
   try {
-    const result = await processAndSave(env, text);
+    const result = await withTimeout(
+      processAndSave(env, text),
+      25000,
+      '처리 시간 초과 (25초) — 잠시 후 같은 링크를 다시 보내주세요'
+    );
     const messages = {
       duplicate: '📌 이미 저장한 글입니다!',
       no_content: '⚠️ 분석할 내용이 없습니다.',
@@ -199,7 +213,11 @@ async function handleAnalyze(env, request) {
   const ownerId = parseInt(env.OWNER_ID || '0');
 
   try {
-    const result = await processAndSave(env, text);
+    const result = await withTimeout(
+      processAndSave(env, text),
+      25000,
+      '처리 시간 초과 (25초) — 잠시 후 같은 링크를 다시 보내주세요'
+    );
     const messages = {
       duplicate: '📌 이미 저장한 글입니다.',
       no_content: '⚠️ 분석할 내용이 없습니다.',
