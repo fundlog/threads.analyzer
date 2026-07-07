@@ -6,7 +6,7 @@
 
 import { sendMessage, setWebhook } from './telegram.js';
 import { processAndSave } from './analyze.js';
-import { getTodaysPosts, getStats, getRecentErrors, logError, getTodaysPostsForDelete, deletePostByHash } from './database.js';
+import { getTodaysPosts, getStats, getRecentErrors, logError, getTodaysPostsForDelete, deletePostByHash, saveFailedLink, getRetryQueue, removeFromRetryQueue, bumpRetryAttempt } from './database.js';
 import { generateReportHtml } from './report.js';
 import { getLocalNow, jsonResponse, CORS_HEADERS } from './utils.js';
 
@@ -158,9 +158,12 @@ async function handleMessage(env, chatId, userId, text) {
     };
     await sendMessage(env.TELEGRAM_TOKEN, chatId, messages[result] || '✅ 완료');
   } catch (e) {
-    await logError(env.DB, `msg_${e.constructor.name}`);
     console.error('Processing failed:', e.message);
-    await sendMessage(env.TELEGRAM_TOKEN, chatId, `❌ 저장 실패: ${e.message}`);
+    // 메시지를 먼저 보낸다 — DB 문제로 아래 기록이 실패해도 사용자는 결과를 받도록
+    await sendMessage(env.TELEGRAM_TOKEN, chatId,
+      `❌ 저장 실패: ${e.message}\n\n📥 대기열에 넣어뒀어요. 나중에 자동으로 다시 시도합니다.\n${text}`);
+    await logError(env.DB, `msg_${e.constructor.name}`).catch(() => {});
+    await saveFailedLink(env.DB, text, e.message);
   }
 }
 
@@ -193,7 +196,7 @@ async function handleTelegramUpdate(env, update) {
 // iOS 단축어 /analyze 엔드포인트
 // ============================================================
 
-async function handleAnalyze(env, request) {
+async function handleAnalyze(env, request, ctx) {
   let data;
   try {
     data = await request.json();
@@ -212,6 +215,8 @@ async function handleAnalyze(env, request) {
 
   const ownerId = parseInt(env.OWNER_ID || '0');
 
+  // 결과를 끝까지 기다렸다가 HTTP 응답으로 돌려준다 → 단축어가 성공/실패를 바로 표시.
+  // (멈춤의 원인이던 DB 문제는 해결됐고, 25초 통합 timeout 이 무한대기를 막아줌)
   try {
     const result = await withTimeout(
       processAndSave(env, text),
@@ -221,22 +226,27 @@ async function handleAnalyze(env, request) {
     const messages = {
       duplicate: '📌 이미 저장한 글입니다.',
       no_content: '⚠️ 분석할 내용이 없습니다.',
-      ok_drive: '✅ 저장 완료! /report 로 확인',
-      ok_drive_fail: '✅ 분석 완료! (⚠️ Drive 저장 실패 — 텔레그램에만 저장됨) /report 로 확인',
+      ok_drive: '✅ 저장 완료!',
+      ok_drive_fail: '✅ 저장 완료! (Drive만 실패 — 텔레그램엔 저장됨)',
     };
-
+    const msg = messages[result] || '✅ 완료';
+    // 텔레그램에도 기록용으로 전송
     if (ownerId) {
-      await sendMessage(env.TELEGRAM_TOKEN, ownerId, messages[result] || '✅ 완료');
+      await sendMessage(env.TELEGRAM_TOKEN, ownerId, `${msg} /report 로 확인`).catch(() => {});
     }
-
-    return jsonResponse({ status: result });
+    // 단축어가 표시할 결과
+    return jsonResponse({ status: result, message: msg });
   } catch (e) {
-    await logError(env.DB, `webhook_${e.constructor.name}`);
     console.error('Webhook failed:', e.message);
+    const failMsg = `❌ 저장 실패: ${e.message}`;
     if (ownerId) {
-      await sendMessage(env.TELEGRAM_TOKEN, ownerId, `❌ 저장 실패: ${e.message}`);
+      await sendMessage(env.TELEGRAM_TOKEN, ownerId,
+        `${failMsg}\n\n📥 대기열에 넣어뒀어요. 나중에 자동으로 다시 시도합니다.\n${text}`).catch(() => {});
     }
-    return jsonResponse({ status: 'error' }, 500);
+    await logError(env.DB, `webhook_${e.constructor.name}`).catch(() => {});
+    await saveFailedLink(env.DB, text, e.message);
+    // 200 으로 응답해 단축어가 에러로 끊지 않고 실패 메시지를 표시하도록
+    return jsonResponse({ status: 'error', message: failMsg }, 200);
   }
 }
 
@@ -245,7 +255,7 @@ async function handleAnalyze(env, request) {
 // ============================================================
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // CORS preflight
@@ -269,33 +279,65 @@ export default {
       return jsonResponse({ webhook: webhookUrl, result });
     }
 
-    // POST /webhook — Telegram 업데이트
+    // POST /webhook — Telegram 업데이트 (즉시 200 응답 + 백그라운드 처리)
     if (request.method === 'POST' && url.pathname === '/webhook') {
+      let update = null;
       try {
-        const update = await request.json();
-        await handleTelegramUpdate(env, update);
+        update = await request.json();
       } catch (e) {
-        console.error('Telegram webhook error:', e.message);
+        return jsonResponse({ ok: true });
       }
+      ctx.waitUntil(
+        handleTelegramUpdate(env, update).catch(e => console.error('Telegram webhook error:', e.message))
+      );
       return jsonResponse({ ok: true });
     }
 
     // POST /analyze — iOS 단축어
     if (request.method === 'POST' && url.pathname === '/analyze') {
-      return handleAnalyze(env, request);
+      return handleAnalyze(env, request, ctx);
     }
 
     return jsonResponse({ error: 'not found' }, 404);
   },
 
   async scheduled(event, env, ctx) {
+    const ownerId = parseInt(env.OWNER_ID || '0');
+
+    // 1) 재시도 대기열 처리 (매시간) — 저장 실패했던 링크를 자동으로 다시 시도
+    const queue = await getRetryQueue(env.DB);
+    for (const item of queue) {
+      try {
+        const result = await withTimeout(
+          processAndSave(env, item.raw_input),
+          25000,
+          '처리 시간 초과'
+        );
+        await removeFromRetryQueue(env.DB, item.id);
+        if (ownerId && (result === 'ok_drive' || result === 'ok_drive_fail')) {
+          await sendMessage(env.TELEGRAM_TOKEN, ownerId,
+            `✅ (자동 재시도 성공) 저장 완료!\n${item.raw_input}`);
+        }
+      } catch (e) {
+        const attempts = (item.attempts || 0) + 1;
+        if (attempts >= 5) {
+          await removeFromRetryQueue(env.DB, item.id);
+          if (ownerId) {
+            await sendMessage(env.TELEGRAM_TOKEN, ownerId,
+              `❌ (자동 재시도 ${attempts}회 실패, 중단)\n${item.raw_input}`);
+          }
+        } else {
+          await bumpRetryAttempt(env.DB, item.id, e.message);
+        }
+      }
+    }
+
+    // 2) 데일리 리포트 (REPORT_HOUR 에만)
     const reportHour = parseInt(env.REPORT_HOUR || '21');
     const now = getLocalNow(env.TIMEZONE_OFFSET);
     const currentHour = now.getUTCHours();
 
     if (currentHour !== reportHour) return;
-
-    const ownerId = parseInt(env.OWNER_ID || '0');
     if (!ownerId) return;
 
     const posts = await getTodaysPosts(env.DB, env.TIMEZONE_OFFSET);

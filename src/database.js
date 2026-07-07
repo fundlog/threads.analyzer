@@ -95,3 +95,52 @@ export async function getRecentErrors(db) {
   ).all();
   return result.results || [];
 }
+
+// ============================================================
+// 재시도 대기열 (저장 실패한 링크를 모아 cron 에서 자동 재시도)
+// 테이블은 첫 사용 시 자동 생성되므로 수동 마이그레이션 불필요.
+// ============================================================
+
+async function ensureRetryTable(db) {
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS retry_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      raw_input TEXT UNIQUE,
+      attempts INTEGER DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT
+    )`
+  ).run();
+}
+
+export async function saveFailedLink(db, rawInput, error) {
+  try {
+    await ensureRetryTable(db);
+    // 같은 입력은 UNIQUE 제약으로 중복 저장 안 됨
+    await db.prepare(
+      'INSERT OR IGNORE INTO retry_queue (raw_input, attempts, last_error, created_at) VALUES (?, 0, ?, ?)'
+    ).bind(rawInput, (error || '').slice(0, 200), new Date().toISOString()).run();
+  } catch (e) {
+    console.error('saveFailedLink failed:', e.message);
+  }
+}
+
+export async function getRetryQueue(db) {
+  try {
+    await ensureRetryTable(db);
+    const result = await db.prepare('SELECT * FROM retry_queue ORDER BY id LIMIT 10').all();
+    return result.results || [];
+  } catch (e) {
+    console.error('getRetryQueue failed:', e.message);
+    return [];
+  }
+}
+
+export async function removeFromRetryQueue(db, id) {
+  await db.prepare('DELETE FROM retry_queue WHERE id = ?').bind(id).run();
+}
+
+export async function bumpRetryAttempt(db, id, error) {
+  await db.prepare('UPDATE retry_queue SET attempts = attempts + 1, last_error = ? WHERE id = ?')
+    .bind((error || '').slice(0, 200), id).run();
+}
